@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo } from 'react';
 import { 
-  PlusCircle, MapPin, BarChart2, List, Trash2, Crosshair, PlayCircle, Download, TrendingUp, PieChart as PieChartIcon, RotateCcw, Save, ArrowLeft, Trophy
+  PlusCircle, MapPin, BarChart2, List, Trash2, Crosshair, PlayCircle, Download, TrendingUp, PieChart as PieChartIcon, RotateCcw, Save, ArrowLeft, Trophy, Undo2
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
@@ -15,7 +15,7 @@ const getInitialState = () => ({
   matchScore: { sideA: 0, sideB: 0 },
   matchConfig: {
     playerNames: ["自陣 後衛", "自陣 前衛", "相手 後衛", "相手 前衛"],
-    targetGames: 7 // デフォルトは7ゲームマッチ
+    targetGames: 7
   }
 });
 
@@ -56,24 +56,20 @@ const RESULT_TYPES = [
 
 const PIE_COLORS = ['#3b82f6', '#ef4444'];
 
-// --- コアロジック: ポイント配列から全スコアを正確に再計算するエンジン ---
+// スコア再計算エンジン
 const applyPointsToState = (pointsArray, targetGamesVal) => {
   let gA = 0, gB = 0;
   let pA = 0, pB = 0;
   const kVal = Math.floor(targetGamesVal / 2);
 
   const updatedPoints = pointsArray.map(pt => {
-    // 記録時の「ポイント開始時点のスコア」を保存
     const scoreState = { matchScoreMe: gA, matchScoreOpp: gB, gameScoreMe: pA, gameScoreOpp: pB };
-    
-    // 現在のゲームがファイナルゲームかどうかの判定 (k-k で並んだ場合)
     const isFin = (gA === kVal && gB === kVal);
     const threshold = isFin ? 7 : 4;
 
     let nextPa = pA; let nextPb = pB;
     if (pt.isMeScored) nextPa++; else nextPb++;
 
-    // 勝利判定: 規定ポイント以上 かつ 2点差以上（デュース対応）
     if (nextPa >= threshold && (nextPa - nextPb) >= 2) {
       gA++; pA = 0; pB = 0;
     } else if (nextPb >= threshold && (nextPb - nextPa) >= 2) {
@@ -176,7 +172,6 @@ export default function App() {
   
   const [selectedGrid, setSelectedGrid] = useState(null);
 
-  // 試合状態の判定
   const targetGames = data.matchConfig.targetGames;
   const k = Math.floor(targetGames / 2);
   const isFinalGame = (data.matchScore.sideA === k && data.matchScore.sideB === k);
@@ -206,13 +201,19 @@ export default function App() {
       id: Date.now(), 
       gridIndex, 
       isMeScored: isWin,
-      scoreState: null // applyPointsToState内で生成されるためプレースホルダー
+      scoreState: null
     };
     
-    // 全ポイントの配列から現在の正しいスコア状態を再計算する
     const newPointsArray = [...data.points, newPoint];
     const recalculated = applyPointsToState(newPointsArray, targetGames);
+    setData(prev => ({ ...prev, ...recalculated }));
+  };
 
+  // 1手戻る（直前のポイントを取り消す）処理
+  const handleUndoPoint = () => {
+    if (data.points.length === 0) return;
+    const newPointsArray = data.points.slice(0, -1);
+    const recalculated = applyPointsToState(newPointsArray, targetGames);
     setData(prev => ({ ...prev, ...recalculated }));
   };
 
@@ -292,7 +293,6 @@ export default function App() {
     link.click();
   };
 
-  // --- 分析用データ計算 ---
   const heatmapData = useMemo(() => {
     const map = {};
     data.points.forEach(p => { if (p.gridIndex >= 0) map[p.gridIndex] = (map[p.gridIndex] || 0) + 1; });
@@ -419,11 +419,21 @@ export default function App() {
                   {SHOT_TYPES.map(s => <button key={s.id} onClick={() => setCurrentPoint(p => ({ ...p, shotType: s.id }))} className={`px-3 py-1 text-xs rounded-full border transition-all ${currentPoint.shotType === s.id ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{s.label}</button>)}
                 </div>
               </div>
+              
               <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 space-y-4">
                 <div className="grid grid-cols-2 gap-2">
                   {RESULT_TYPES.map(r => <button key={r.id} onClick={() => setCurrentPoint(p => ({ ...p, result: r.id }))} className={`p-2 text-xs rounded font-bold border-2 transition-all ${currentPoint.result === r.id ? (r.type === 'win' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-red-500 bg-red-50 text-red-700') : 'border-transparent bg-slate-100 hover:bg-slate-200'}`}>{r.label}</button>)}
                 </div>
-                <button onClick={addPoint} disabled={isMatchOver} className={`w-full py-4 text-white rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 transition-all text-lg ${isMatchOver ? 'bg-slate-400 cursor-not-allowed opacity-50' : 'bg-emerald-600 hover:bg-emerald-700 active:scale-95'}`}><PlusCircle size={24}/>記録する</button>
+                
+                <button onClick={addPoint} disabled={isMatchOver} className={`w-full py-4 text-white rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 transition-all text-lg ${isMatchOver ? 'bg-slate-400 cursor-not-allowed opacity-50' : 'bg-emerald-600 hover:bg-emerald-700 active:scale-95'}`}>
+                  <PlusCircle size={24}/>記録する
+                </button>
+                
+                <div className="flex justify-end mt-2">
+                  <button onClick={handleUndoPoint} disabled={data.points.length === 0} className={`flex items-center gap-1 text-sm font-bold transition-colors ${data.points.length === 0 ? 'text-slate-300 cursor-not-allowed' : 'text-slate-500 hover:text-red-500 active:scale-95'}`}>
+                    <Undo2 size={16} /> 1手戻る
+                  </button>
+                </div>
               </div>
 
               <div className="flex gap-3 pt-2">
