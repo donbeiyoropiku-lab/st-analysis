@@ -1,22 +1,21 @@
 import React, { useState, useRef, useMemo } from 'react';
 import { 
-  PlusCircle, MapPin, BarChart2, List, Trash2, Crosshair, PlayCircle, Download, TrendingUp, PieChart as PieChartIcon, RotateCcw, Save, ArrowLeft
+  PlusCircle, MapPin, BarChart2, List, Trash2, Crosshair, PlayCircle, Download, TrendingUp, PieChart as PieChartIcon, RotateCcw, Save, ArrowLeft, Trophy
 } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line
 } from 'recharts';
 
-// 初期データを生成する関数（リセット用）
 const getInitialState = () => ({
-  id: Date.now(), // 試合ごとに一意のIDを付与
+  id: Date.now(),
   matchName: "",
   points: [],
   currentGame: { sideA: 0, sideB: 0 },
   matchScore: { sideA: 0, sideB: 0 },
   matchConfig: {
     playerNames: ["自陣 後衛", "自陣 前衛", "相手 後衛", "相手 前衛"],
-    targetGames: 7
+    targetGames: 7 // デフォルトは7ゲームマッチ
   }
 });
 
@@ -27,7 +26,6 @@ const PLAYER_CONFIG = {
   oppFront: { label: '相前', color: '#f87171', bg: 'bg-red-400', group: 'opp' },
 };
 
-// --- コート設定 ---
 const COURT_CONTAINER_ASPECT = '3/4';
 const C_TOP = 10;
 const C_BOTTOM = 90;
@@ -57,6 +55,42 @@ const RESULT_TYPES = [
 ];
 
 const PIE_COLORS = ['#3b82f6', '#ef4444'];
+
+// --- コアロジック: ポイント配列から全スコアを正確に再計算するエンジン ---
+const applyPointsToState = (pointsArray, targetGamesVal) => {
+  let gA = 0, gB = 0;
+  let pA = 0, pB = 0;
+  const kVal = Math.floor(targetGamesVal / 2);
+
+  const updatedPoints = pointsArray.map(pt => {
+    // 記録時の「ポイント開始時点のスコア」を保存
+    const scoreState = { matchScoreMe: gA, matchScoreOpp: gB, gameScoreMe: pA, gameScoreOpp: pB };
+    
+    // 現在のゲームがファイナルゲームかどうかの判定 (k-k で並んだ場合)
+    const isFin = (gA === kVal && gB === kVal);
+    const threshold = isFin ? 7 : 4;
+
+    let nextPa = pA; let nextPb = pB;
+    if (pt.isMeScored) nextPa++; else nextPb++;
+
+    // 勝利判定: 規定ポイント以上 かつ 2点差以上（デュース対応）
+    if (nextPa >= threshold && (nextPa - nextPb) >= 2) {
+      gA++; pA = 0; pB = 0;
+    } else if (nextPb >= threshold && (nextPb - nextPa) >= 2) {
+      gB++; pA = 0; pB = 0;
+    } else {
+      pA = nextPa; pB = nextPb;
+    }
+
+    return { ...pt, scoreState };
+  });
+
+  return {
+    points: updatedPoints,
+    matchScore: { sideA: gA, sideB: gB },
+    currentGame: { sideA: pA, sideB: pB }
+  };
+};
 
 const CourtMap = ({ 
   interactive = false, positions = {}, ballPosition = null, onUpdatePosition = null, heatmapData = null, selectedGrid = null, onSelectGrid = null
@@ -129,13 +163,8 @@ const CourtMap = ({
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('input');
-  
-  // 現在入力中の試合データ
   const [data, setData] = useState(getInitialState());
-  // 保存済みの試合履歴リスト
   const [matchHistory, setMatchHistory] = useState([]);
-  
-  // 履歴タブの表示状態 ('list' = 試合一覧, 'points' = 選択した試合のポイント詳細)
   const [historyView, setHistoryView] = useState('list');
   const [selectedHistoryMatch, setSelectedHistoryMatch] = useState(null);
 
@@ -147,12 +176,23 @@ export default function App() {
   
   const [selectedGrid, setSelectedGrid] = useState(null);
 
+  // 試合状態の判定
+  const targetGames = data.matchConfig.targetGames;
+  const k = Math.floor(targetGames / 2);
+  const isFinalGame = (data.matchScore.sideA === k && data.matchScore.sideB === k);
+  const isMatchOver = (data.matchScore.sideA > k || data.matchScore.sideB > k);
+
   const handleUpdatePosition = (id, newPos) => {
     if (id === 'ball') setCurrentPoint(prev => ({ ...prev, ballPosition: newPos }));
     else setCurrentPoint(prev => ({ ...prev, positions: { ...prev.positions, [id]: newPos } }));
   };
 
   const addPoint = () => {
+    if (isMatchOver) {
+      alert(`この試合はすでに決着がついています。`);
+      return;
+    }
+
     let relX = (currentPoint.ballPosition.x - C_LEFT) / C_WIDTH;
     let relY = (currentPoint.ballPosition.y - C_TOP) / C_HEIGHT;
     let gridIndex = -1;
@@ -166,24 +206,16 @@ export default function App() {
       id: Date.now(), 
       gridIndex, 
       isMeScored: isWin,
-      scoreState: {
-        matchScoreMe: data.matchScore.sideA,
-        matchScoreOpp: data.matchScore.sideB,
-        gameScoreMe: data.currentGame.sideA,
-        gameScoreOpp: data.currentGame.sideB,
-      }
+      scoreState: null // applyPointsToState内で生成されるためプレースホルダー
     };
     
-    let newGame = { ...data.currentGame };
-    isWin ? newGame.sideA++ : newGame.sideB++;
-    let newMatch = { ...data.matchScore };
-    if (newGame.sideA >= 4) { newMatch.sideA++; newGame = { sideA: 0, sideB: 0 }; }
-    else if (newGame.sideB >= 4) { newMatch.sideB++; newGame = { sideA: 0, sideB: 0 }; }
+    // 全ポイントの配列から現在の正しいスコア状態を再計算する
+    const newPointsArray = [...data.points, newPoint];
+    const recalculated = applyPointsToState(newPointsArray, targetGames);
 
-    setData(prev => ({ ...prev, points: [...prev.points, newPoint], currentGame: newGame, matchScore: newMatch }));
+    setData(prev => ({ ...prev, ...recalculated }));
   };
 
-  // 入力リセット・保存処理
   const handleSaveAndReset = () => {
     if (data.points.length === 0 && !data.matchName) {
       setData(getInitialState());
@@ -203,21 +235,30 @@ export default function App() {
 
   const handleDeletePoint = (matchId, pointId) => {
     if (data.id === matchId) {
-      setData(prev => ({ ...prev, points: prev.points.filter(pt => pt.id !== pointId) }));
-      if (selectedHistoryMatch && selectedHistoryMatch.id === matchId) {
-        setSelectedHistoryMatch(prev => ({ ...prev, points: prev.points.filter(pt => pt.id !== pointId) }));
+      const newPointsArray = data.points.filter(pt => pt.id !== pointId);
+      const recalculated = applyPointsToState(newPointsArray, data.matchConfig.targetGames);
+      setData(prev => ({ ...prev, ...recalculated }));
+      
+      if (selectedHistoryMatch?.id === matchId) {
+        setSelectedHistoryMatch(prev => ({ ...prev, ...recalculated }));
       }
     } else {
-      setMatchHistory(prev => prev.map(m => m.id === matchId ? { ...m, points: m.points.filter(pt => pt.id !== pointId) } : m));
-      if (selectedHistoryMatch && selectedHistoryMatch.id === matchId) {
-        setSelectedHistoryMatch(prev => ({ ...prev, points: prev.points.filter(pt => pt.id !== pointId) }));
-      }
+      setMatchHistory(prev => prev.map(m => {
+        if (m.id === matchId) {
+          const newPts = m.points.filter(pt => pt.id !== pointId);
+          const rec = applyPointsToState(newPts, m.matchConfig.targetGames);
+          const updatedMatch = { ...m, ...rec };
+          if (selectedHistoryMatch?.id === matchId) setSelectedHistoryMatch(updatedMatch);
+          return updatedMatch;
+        }
+        return m;
+      }));
     }
   };
 
   const exportCSV = (targetMatch) => {
     const headers = [
-      "MatchName", "PointID", 
+      "MatchName", "TargetGames", "PointID", 
       "MatchScore_Me", "MatchScore_Opp", "GameScore_Me", "GameScore_Opp", 
       "Server", "Ender", "EnderGroup", "ShotType", "Result", "IsMeScored", 
       "BallX", "BallY", "GridIndex"
@@ -225,6 +266,7 @@ export default function App() {
     
     const rows = targetMatch.points.map(p => [
       targetMatch.matchName || 'Unknown_Match',
+      targetMatch.matchConfig.targetGames,
       p.id,
       p.scoreState.matchScoreMe,
       p.scoreState.matchScoreOpp,
@@ -250,7 +292,7 @@ export default function App() {
     link.click();
   };
 
-  // 分析用データ計算 (現在入力中の data を対象とする)
+  // --- 分析用データ計算 ---
   const heatmapData = useMemo(() => {
     const map = {};
     data.points.forEach(p => { if (p.gridIndex >= 0) map[p.gridIndex] = (map[p.gridIndex] || 0) + 1; });
@@ -285,10 +327,8 @@ export default function App() {
     const formatData = (obj) => Object.entries(obj).map(([name, value]) => ({ name: PLAYER_CONFIG[name].label, value })).filter(d => d.value > 0);
 
     return {
-      meFinish: formatData(meFinish),
-      meError: formatData(meError),
-      oppFinish: formatData(oppFinish),
-      oppError: formatData(oppError),
+      meFinish: formatData(meFinish), meError: formatData(meError),
+      oppFinish: formatData(oppFinish), oppError: formatData(oppError),
       meColors: [PLAYER_CONFIG.meBack.color, PLAYER_CONFIG.meFront.color],
       oppColors: [PLAYER_CONFIG.oppBack.color, PLAYER_CONFIG.oppFront.color]
     };
@@ -298,247 +338,44 @@ export default function App() {
     if (gridIndex === null) return null;
     const pointsInGrid = data.points.filter(p => p.gridIndex === gridIndex);
     if (pointsInGrid.length === 0) return null;
-
     const winCount = pointsInGrid.filter(p => p.isMeScored).length;
     const lossCount = pointsInGrid.length - winCount;
-    
     const shotCounts = {};
     pointsInGrid.forEach(p => {
       const label = SHOT_TYPES.find(s => s.id === p.shotType)?.label || p.shotType;
       shotCounts[label] = (shotCounts[label] || 0) + 1;
     });
-
     return {
-      total: pointsInGrid.length,
-      winRate: Math.round((winCount / pointsInGrid.length) * 100),
-      winCount, lossCount,
-      shotData: Object.entries(shotCounts).map(([name, value]) => ({ name, value }))
+      total: pointsInGrid.length, winRate: Math.round((winCount / pointsInGrid.length) * 100),
+      winCount, lossCount, shotData: Object.entries(shotCounts).map(([name, value]) => ({ name, value }))
     };
-  };
-
-  const renderAnalysisTab = () => {
-    const gridStats = getGridStats(selectedGrid);
-    return (
-      <div className="space-y-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-            <h3 className="font-bold mb-4 flex items-center gap-2"><Crosshair size={18} className="text-indigo-600" />ヒートマップ (タップして詳細表示)</h3>
-            <div className="max-w-sm mx-auto">
-              <CourtMap heatmapData={heatmapData} selectedGrid={selectedGrid} onSelectGrid={setSelectedGrid} />
-            </div>
-          </div>
-          
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-            <h3 className="font-bold mb-4 flex items-center gap-2"><BarChart2 size={18} className="text-indigo-600" />選択エリアの詳細分析</h3>
-            {gridStats ? (
-              <div className="space-y-6">
-                <div className="flex justify-between items-center bg-slate-50 p-4 rounded-lg">
-                  <div>
-                    <p className="text-sm text-slate-500 font-medium">エリアへの球数</p>
-                    <p className="text-2xl font-bold text-slate-800">{gridStats.total}<span className="text-sm font-normal ml-1">球</span></p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-sm text-slate-500 font-medium">自陣得点率</p>
-                    <p className={`text-2xl font-bold ${gridStats.winRate >= 50 ? 'text-blue-600' : 'text-red-600'}`}>
-                      {gridStats.winRate}<span className="text-sm font-normal ml-1">%</span>
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4 h-48">
-                  <div>
-                    <p className="text-xs font-bold text-slate-500 text-center mb-1">得点 / 失点</p>
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie data={[{ name: '得点', value: gridStats.winCount }, { name: '失点', value: gridStats.lossCount }]} cx="50%" cy="50%" innerRadius={30} outerRadius={50} paddingAngle={2} dataKey="value" label>
-                          {[0,1].map((entry, index) => <Cell key={`cell-${index}`} fill={PIE_COLORS[index]} />)}
-                        </Pie>
-                        <RechartsTooltip />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div>
-                    <p className="text-xs font-bold text-slate-500 text-center mb-1">ショット種類</p>
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={gridStats.shotData} layout="vertical" margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
-                        <XAxis type="number" hide />
-                        <YAxis dataKey="name" type="category" width={80} tick={{fontSize: 10}} />
-                        <RechartsTooltip />
-                        <Bar dataKey="value" fill="#8b5cf6" radius={[0, 4, 4, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="h-64 flex flex-col items-center justify-center text-slate-400 text-sm">
-                <Crosshair size={32} className="mb-2 opacity-30" />
-                左のコートのマスを選択してください
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-          <h3 className="font-bold mb-4 flex items-center gap-2"><TrendingUp size={18} className="text-indigo-600" />試合の流れ（得点推移）</h3>
-          <div className="h-64">
-            <ResponsiveContainer>
-              <LineChart data={scoreTrendData} margin={{ top: 5, right: 20, left: -20, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3"/>
-                <XAxis dataKey="name" hide/>
-                <YAxis/>
-                <RechartsTooltip/>
-                <Legend/>
-                <Line type="stepAfter" dataKey="自陣" stroke="#2563eb" strokeWidth={3} dot={false}/>
-                <Line type="stepAfter" dataKey="相手" stroke="#dc2626" strokeWidth={3} dot={false}/>
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-          <h3 className="font-bold mb-4 flex items-center gap-2"><PieChartIcon size={18} className="text-indigo-600" />プレイヤー別 決定力・ミス分析</h3>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[ 
-              { title: '自陣の決定打', data: playerStats.meFinish, colors: playerStats.meColors }, 
-              { title: '自陣のミス', data: playerStats.meError, colors: playerStats.meColors },
-              { title: '相手の決定打', data: playerStats.oppFinish, colors: playerStats.oppColors }, 
-              { title: '相手のミス', data: playerStats.oppError, colors: playerStats.oppColors } 
-            ].map((s, i) => (
-              <div key={i} className="flex flex-col items-center p-2 bg-slate-50 rounded-lg">
-                <h4 className="text-xs font-bold text-slate-600 mb-2">{s.title}</h4>
-                <div className="w-full h-32">
-                  {s.data.length > 0 ? (
-                    <ResponsiveContainer>
-                      <PieChart>
-                        <Pie data={s.data} dataKey="value" cx="50%" cy="50%" innerRadius={25} outerRadius={40} label={(entry) => entry.name} labelLine={false}>
-                          {s.data.map((entry, j) => <Cell key={j} fill={s.colors[j % s.colors.length]} />)}
-                        </Pie>
-                        <RechartsTooltip />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-xs text-slate-400">データなし</div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderHistoryTab = () => {
-    if (historyView === 'list') {
-      // 現在入力中の試合（ポイントが1以上ある、または名前がある場合）と、保存済みの試合を統合
-      const activeMatch = (data.points.length > 0 || data.matchName) ? { ...data, isOngoing: true } : null;
-      const allMatches = activeMatch ? [activeMatch, ...matchHistory] : matchHistory;
-
-      return (
-        <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-          <h3 className="font-bold flex items-center gap-2 mb-4"><List size={18}/>試合履歴</h3>
-          {allMatches.length === 0 ? (
-            <p className="text-center text-slate-400 py-8 text-sm">記録された試合はありません</p>
-          ) : (
-            <div className="overflow-x-auto text-sm">
-              <table className="w-full text-left">
-                <thead className="bg-slate-50 text-slate-500 border-b">
-                  <tr><th className="p-3">状態</th><th className="p-3">試合名</th><th className="p-3">スコア</th><th className="p-3">操作</th></tr>
-                </thead>
-                <tbody>
-                  {allMatches.map((m) => (
-                    <tr key={m.id} className="border-b border-slate-100 hover:bg-slate-50">
-                      <td className="p-3">
-                        {m.isOngoing 
-                          ? <span className="bg-emerald-100 text-emerald-700 px-2 py-1 rounded text-[10px] font-bold">入力中</span> 
-                          : <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded text-[10px] font-bold">保存済</span>}
-                      </td>
-                      <td className="p-3 font-medium">{m.matchName || '未名称の試合'}</td>
-                      <td className="p-3 font-mono">{m.matchScore.sideA} - {m.matchScore.sideB}</td>
-                      <td className="p-3">
-                        <button 
-                          onClick={() => { setSelectedHistoryMatch(m); setHistoryView('points'); }}
-                          className="text-indigo-600 hover:text-indigo-800 font-bold px-3 py-1 bg-indigo-50 rounded-lg"
-                        >
-                          詳細・出力
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // historyView === 'points' (選択した試合のポイント履歴)
-    const m = selectedHistoryMatch;
-    if (!m) return null;
-
-    return (
-      <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-        <div className="flex justify-between items-center mb-6">
-          <button onClick={() => setHistoryView('list')} className="flex items-center gap-1 text-slate-500 hover:text-slate-800 font-bold text-sm bg-slate-100 px-3 py-1.5 rounded-lg">
-            <ArrowLeft size={16}/> 試合一覧に戻る
-          </button>
-          <button onClick={() => exportCSV(m)} className="flex items-center gap-2 px-4 py-1.5 bg-slate-800 text-white rounded-lg text-sm font-bold hover:bg-slate-700 transition-colors">
-            <Download size={16}/> CSV出力
-          </button>
-        </div>
-        
-        <div className="mb-4 p-3 bg-indigo-50 rounded-lg border border-indigo-100">
-          <h4 className="font-bold text-indigo-900">{m.matchName || '未名称の試合'}</h4>
-          <p className="text-xs text-indigo-700 mt-1">総ポイント数: {m.points.length} pts</p>
-        </div>
-
-        {m.points.length === 0 ? (
-          <p className="text-center text-slate-400 py-8 text-sm">ポイントの記録がありません</p>
-        ) : (
-          <div className="overflow-x-auto text-sm">
-            <table className="w-full text-left">
-              <thead className="bg-slate-50 text-slate-500">
-                <tr><th className="p-3">#</th><th className="p-3">スコア</th><th className="p-3">結果</th><th className="p-3">最後</th><th className="p-3">操作</th></tr>
-              </thead>
-              <tbody>
-                {m.points.slice().reverse().map((p, i) => (
-                  <tr key={p.id} className="border-t border-slate-100">
-                    <td className="p-3 text-xs text-slate-400">{m.points.length - i}</td>
-                    <td className="p-3 font-mono text-xs">{p.scoreState.gameScoreMe}-{p.scoreState.gameScoreOpp}</td>
-                    <td className="p-3 font-bold"><span className={p.isMeScored ? 'text-blue-600' : 'text-red-600'}>{RESULT_TYPES.find(r => r.id === p.result)?.label}</span></td>
-                    <td className="p-3">{PLAYER_CONFIG[p.ender]?.label}</td>
-                    <td className="p-3">
-                      <button onClick={() => handleDeletePoint(m.id, p.id)} className="text-red-400 p-1 hover:bg-red-50 rounded">
-                        <Trash2 size={16}/>
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    );
   };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans pb-20">
       <header className="bg-slate-800 text-white p-4 shadow-md sticky top-0 z-50">
         <div className="max-w-5xl mx-auto space-y-3">
-          <div className="flex justify-between items-center">
-            <h1 className="text-xl font-black flex items-center gap-2"><PlayCircle className="text-emerald-400" />ST-ANALYTICS</h1>
-            <div className="flex items-center gap-4 bg-slate-700/50 px-4 py-1.5 rounded-full border border-slate-600 text-sm font-bold">
-              <span className="text-blue-400">{data.matchScore.sideA} <span className="text-xs">({data.currentGame.sideA})</span></span>
-              <span className="text-slate-500">-</span>
-              <span className="text-red-400"><span className="text-xs">({data.currentGame.sideB})</span> {data.matchScore.sideB}</span>
+          <div className="flex justify-between items-start">
+            <div>
+              <h1 className="text-xl font-black flex items-center gap-2"><PlayCircle className="text-emerald-400" />ST-ANALYTICS</h1>
+            </div>
+            <div className="flex flex-col items-center">
+              {isMatchOver && <span className="text-[10px] text-yellow-300 font-bold mb-0.5 animate-pulse bg-yellow-900/50 px-2 rounded"><Trophy size={10} className="inline mr-1" />MATCH END</span>}
+              {!isMatchOver && isFinalGame && <span className="text-[10px] text-orange-400 font-bold mb-0.5 bg-orange-900/50 px-2 rounded">FINAL GAME</span>}
+              <div className="flex items-center gap-3 bg-slate-700/80 px-4 py-1.5 rounded-full border border-slate-600 text-sm font-bold shadow-inner">
+                <span className="text-blue-400 flex items-center gap-1">
+                  <span className="text-xl">{data.matchScore.sideA}</span> <span className="text-[10px] text-slate-400">({data.currentGame.sideA})</span>
+                </span>
+                <span className="text-slate-500">-</span>
+                <span className="text-red-400 flex items-center gap-1">
+                  <span className="text-[10px] text-slate-400">({data.currentGame.sideB})</span> <span className="text-xl">{data.matchScore.sideB}</span>
+                </span>
+              </div>
             </div>
           </div>
           <div className="relative">
             <input type="text" placeholder="試合名を入力 (例: A・BペアvsC・Dペア_20260514)" value={data.matchName} onChange={(e) => setData(prev => ({ ...prev, matchName: e.target.value }))}
-              className="w-full bg-slate-700 border-none rounded-lg py-2 px-4 text-sm focus:ring-2 focus:ring-emerald-500 transition-all outline-none" />
+              className="w-full bg-slate-700 border border-slate-600 rounded-lg py-2 px-4 text-sm focus:ring-2 focus:ring-emerald-500 transition-all outline-none" />
           </div>
         </div>
       </header>
@@ -547,11 +384,22 @@ export default function App() {
         {activeTab === 'input' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-              <h3 className="text-md font-bold mb-4 flex items-center gap-2"><MapPin size={18} className="text-emerald-600" />ポジションと着弾点</h3>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-md font-bold flex items-center gap-2"><MapPin size={18} className="text-emerald-600" />配置と着弾点</h3>
+                <div className="flex bg-slate-100 rounded-lg p-1 border border-slate-200">
+                  {[5, 7, 9].map(num => (
+                    <button key={num} onClick={() => setData(prev => ({ ...prev, matchConfig: { ...prev.matchConfig, targetGames: num } }))}
+                      className={`px-3 py-1 text-xs font-bold rounded-md transition-all ${data.matchConfig.targetGames === num ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                      {num}G
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="max-w-sm mx-auto">
                 <CourtMap interactive={true} positions={currentPoint.positions} ballPosition={currentPoint.ballPosition} onUpdatePosition={handleUpdatePosition} />
               </div>
             </div>
+            
             <div className="space-y-4">
               <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 grid grid-cols-2 gap-4">
                 {['server', 'ender'].map(key => (
@@ -559,7 +407,7 @@ export default function App() {
                     <label className="text-xs font-bold text-slate-500 mb-2 block">{key === 'server' ? 'サーバー' : '最終プレーヤー'}</label>
                     <div className="grid grid-cols-2 gap-2">
                       {Object.entries(PLAYER_CONFIG).map(([id, cfg]) => (
-                        <button key={id} onClick={() => setCurrentPoint(p => ({ ...p, [key]: id }))} className={`p-2 text-[10px] rounded font-bold transition-all ${currentPoint[key] === id ? `${cfg.bg} text-white` : 'bg-slate-100 text-slate-600'}`}>{cfg.label}</button>
+                        <button key={id} onClick={() => setCurrentPoint(p => ({ ...p, [key]: id }))} className={`p-2 text-[10px] rounded font-bold transition-all ${currentPoint[key] === id ? `${cfg.bg} text-white shadow-sm` : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{cfg.label}</button>
                       ))}
                     </div>
                   </div>
@@ -568,22 +416,21 @@ export default function App() {
               <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
                 <label className="text-xs font-bold text-slate-500 mb-2 block">ショット種類</label>
                 <div className="flex flex-wrap gap-2">
-                  {SHOT_TYPES.map(s => <button key={s.id} onClick={() => setCurrentPoint(p => ({ ...p, shotType: s.id }))} className={`px-3 py-1 text-xs rounded-full border transition-all ${currentPoint.shotType === s.id ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 border-slate-200'}`}>{s.label}</button>)}
+                  {SHOT_TYPES.map(s => <button key={s.id} onClick={() => setCurrentPoint(p => ({ ...p, shotType: s.id }))} className={`px-3 py-1 text-xs rounded-full border transition-all ${currentPoint.shotType === s.id ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>{s.label}</button>)}
                 </div>
               </div>
               <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 space-y-4">
                 <div className="grid grid-cols-2 gap-2">
-                  {RESULT_TYPES.map(r => <button key={r.id} onClick={() => setCurrentPoint(p => ({ ...p, result: r.id }))} className={`p-2 text-xs rounded font-bold border-2 transition-all ${currentPoint.result === r.id ? (r.type === 'win' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-red-500 bg-red-50 text-red-700') : 'border-transparent bg-slate-100'}`}>{r.label}</button>)}
+                  {RESULT_TYPES.map(r => <button key={r.id} onClick={() => setCurrentPoint(p => ({ ...p, result: r.id }))} className={`p-2 text-xs rounded font-bold border-2 transition-all ${currentPoint.result === r.id ? (r.type === 'win' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-red-500 bg-red-50 text-red-700') : 'border-transparent bg-slate-100 hover:bg-slate-200'}`}>{r.label}</button>)}
                 </div>
-                <button onClick={addPoint} className="w-full py-4 bg-emerald-600 text-white rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-transform text-lg"><PlusCircle size={24}/>記録する</button>
+                <button onClick={addPoint} disabled={isMatchOver} className={`w-full py-4 text-white rounded-xl font-bold shadow-lg flex items-center justify-center gap-2 transition-all text-lg ${isMatchOver ? 'bg-slate-400 cursor-not-allowed opacity-50' : 'bg-emerald-600 hover:bg-emerald-700 active:scale-95'}`}><PlusCircle size={24}/>記録する</button>
               </div>
 
-              {/* リセット・保存機能エリア */}
               <div className="flex gap-3 pt-2">
-                <button onClick={handleSaveAndReset} className="flex-1 py-3 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-xl font-bold text-xs flex flex-col items-center justify-center gap-1 active:scale-95 transition-transform">
-                  <Save size={18}/>履歴に保存して次の試合へ
+                <button onClick={handleSaveAndReset} className="flex-1 py-3 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-xl font-bold text-xs flex flex-col items-center justify-center gap-1 active:scale-95 hover:bg-indigo-100 transition-colors">
+                  <Save size={18}/>履歴に保存して次へ
                 </button>
-                <button onClick={handleResetOnly} className="flex-1 py-3 bg-red-50 text-red-700 border border-red-200 rounded-xl font-bold text-xs flex flex-col items-center justify-center gap-1 active:scale-95 transition-transform">
+                <button onClick={handleResetOnly} className="flex-1 py-3 bg-red-50 text-red-700 border border-red-200 rounded-xl font-bold text-xs flex flex-col items-center justify-center gap-1 active:scale-95 hover:bg-red-100 transition-colors">
                   <RotateCcw size={18}/>破棄してリセット
                 </button>
               </div>
@@ -591,14 +438,207 @@ export default function App() {
           </div>
         )}
 
-        {activeTab === 'analysis' && renderAnalysisTab()}
+        {activeTab === 'analysis' && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                <h3 className="font-bold mb-4 flex items-center gap-2"><Crosshair size={18} className="text-indigo-600" />ヒートマップ (タップして詳細表示)</h3>
+                <div className="max-w-sm mx-auto">
+                  <CourtMap heatmapData={heatmapData} selectedGrid={selectedGrid} onSelectGrid={setSelectedGrid} />
+                </div>
+              </div>
+              
+              <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                <h3 className="font-bold mb-4 flex items-center gap-2"><BarChart2 size={18} className="text-indigo-600" />選択エリアの詳細分析</h3>
+                {getGridStats(selectedGrid) ? (
+                  <div className="space-y-6">
+                    <div className="flex justify-between items-center bg-slate-50 p-4 rounded-lg">
+                      <div>
+                        <p className="text-sm text-slate-500 font-medium">エリアへの球数</p>
+                        <p className="text-2xl font-bold text-slate-800">{getGridStats(selectedGrid).total}<span className="text-sm font-normal ml-1">球</span></p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm text-slate-500 font-medium">自陣得点率</p>
+                        <p className={`text-2xl font-bold ${getGridStats(selectedGrid).winRate >= 50 ? 'text-blue-600' : 'text-red-600'}`}>
+                          {getGridStats(selectedGrid).winRate}<span className="text-sm font-normal ml-1">%</span>
+                        </p>
+                      </div>
+                    </div>
 
-        {activeTab === 'history' && renderHistoryTab()}
+                    <div className="grid grid-cols-2 gap-4 h-48">
+                      <div>
+                        <p className="text-xs font-bold text-slate-500 text-center mb-1">得点 / 失点</p>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie data={[{ name: '得点', value: getGridStats(selectedGrid).winCount }, { name: '失点', value: getGridStats(selectedGrid).lossCount }]} cx="50%" cy="50%" innerRadius={30} outerRadius={50} paddingAngle={2} dataKey="value" label>
+                              {[0,1].map((entry, index) => <Cell key={`cell-${index}`} fill={PIE_COLORS[index]} />)}
+                            </Pie>
+                            <RechartsTooltip />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold text-slate-500 text-center mb-1">ショット種類</p>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={getGridStats(selectedGrid).shotData} layout="vertical" margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
+                            <XAxis type="number" hide />
+                            <YAxis dataKey="name" type="category" width={80} tick={{fontSize: 10}} />
+                            <RechartsTooltip />
+                            <Bar dataKey="value" fill="#8b5cf6" radius={[0, 4, 4, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="h-64 flex flex-col items-center justify-center text-slate-400 text-sm bg-slate-50 rounded-lg">
+                    <Crosshair size={32} className="mb-2 opacity-30" />
+                    左のコートのマスを選択してください
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+              <h3 className="font-bold mb-4 flex items-center gap-2"><TrendingUp size={18} className="text-indigo-600" />試合の流れ（得点推移）</h3>
+              <div className="h-64">
+                <ResponsiveContainer>
+                  <LineChart data={scoreTrendData} margin={{ top: 5, right: 20, left: -20, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3"/>
+                    <XAxis dataKey="name" hide/>
+                    <YAxis/>
+                    <RechartsTooltip/>
+                    <Legend/>
+                    <Line type="stepAfter" dataKey="自陣" stroke="#2563eb" strokeWidth={3} dot={false}/>
+                    <Line type="stepAfter" dataKey="相手" stroke="#dc2626" strokeWidth={3} dot={false}/>
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+              <h3 className="font-bold mb-4 flex items-center gap-2"><PieChartIcon size={18} className="text-indigo-600" />プレイヤー別 決定力・ミス分析</h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {[ 
+                  { title: '自陣の決定打', data: playerStats.meFinish, colors: playerStats.meColors }, 
+                  { title: '自陣のミス', data: playerStats.meError, colors: playerStats.meColors },
+                  { title: '相手の決定打', data: playerStats.oppFinish, colors: playerStats.oppColors }, 
+                  { title: '相手のミス', data: playerStats.oppError, colors: playerStats.oppColors } 
+                ].map((s, i) => (
+                  <div key={i} className="flex flex-col items-center p-2 bg-slate-50 rounded-lg">
+                    <h4 className="text-[10px] font-bold text-slate-600 mb-2">{s.title}</h4>
+                    <div className="w-full h-32">
+                      {s.data.length > 0 ? (
+                        <ResponsiveContainer>
+                          <PieChart>
+                            <Pie data={s.data} dataKey="value" cx="50%" cy="50%" innerRadius={25} outerRadius={40} label={(entry) => entry.name} labelLine={false} style={{fontSize: '10px'}}>
+                              {s.data.map((entry, j) => <Cell key={j} fill={s.colors[j % s.colors.length]} />)}
+                            </Pie>
+                            <RechartsTooltip />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-xs text-slate-400">データなし</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'history' && (
+          historyView === 'list' ? (
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+              <h3 className="font-bold flex items-center gap-2 mb-4"><List size={18}/>試合履歴</h3>
+              {(data.points.length > 0 || data.matchName || matchHistory.length > 0) ? (
+                <div className="overflow-x-auto text-sm">
+                  <table className="w-full text-left">
+                    <thead className="bg-slate-50 text-slate-500 border-b">
+                      <tr><th className="p-3">状態</th><th className="p-3">試合名</th><th className="p-3">スコア</th><th className="p-3">操作</th></tr>
+                    </thead>
+                    <tbody>
+                      {[(data.points.length > 0 || data.matchName) ? { ...data, isOngoing: true } : null, ...matchHistory].filter(Boolean).map((m) => (
+                        <tr key={m.id} className="border-b border-slate-100 hover:bg-slate-50">
+                          <td className="p-3">
+                            {m.isOngoing 
+                              ? <span className="bg-emerald-100 text-emerald-700 px-2 py-1 rounded text-[10px] font-bold">入力中</span> 
+                              : <span className="bg-slate-100 text-slate-600 px-2 py-1 rounded text-[10px] font-bold">保存済</span>}
+                          </td>
+                          <td className="p-3 font-medium">{m.matchName || '未名称の試合'} <span className="text-[10px] text-slate-400 ml-1">({m.matchConfig.targetGames}G)</span></td>
+                          <td className="p-3 font-mono">{m.matchScore.sideA} - {m.matchScore.sideB}</td>
+                          <td className="p-3">
+                            <button onClick={() => { setSelectedHistoryMatch(m); setHistoryView('points'); }} className="text-indigo-600 hover:text-indigo-800 font-bold px-3 py-1 bg-indigo-50 rounded-lg whitespace-nowrap">
+                              詳細・出力
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-center text-slate-400 py-8 text-sm">記録された試合はありません</p>
+              )}
+            </div>
+          ) : (
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+              <div className="flex justify-between items-center mb-6">
+                <button onClick={() => setHistoryView('list')} className="flex items-center gap-1 text-slate-500 hover:text-slate-800 font-bold text-sm bg-slate-100 px-3 py-1.5 rounded-lg transition-colors">
+                  <ArrowLeft size={16}/> 試合一覧に戻る
+                </button>
+                <button onClick={() => exportCSV(selectedHistoryMatch)} className="flex items-center gap-2 px-4 py-1.5 bg-slate-800 text-white rounded-lg text-sm font-bold hover:bg-slate-700 transition-colors">
+                  <Download size={16}/> CSV出力
+                </button>
+              </div>
+              
+              <div className="mb-4 p-3 bg-indigo-50 rounded-lg border border-indigo-100 flex justify-between items-center">
+                <div>
+                  <h4 className="font-bold text-indigo-900">{selectedHistoryMatch.matchName || '未名称の試合'}</h4>
+                  <p className="text-xs text-indigo-700 mt-1">
+                    {selectedHistoryMatch.matchConfig.targetGames}ゲームマッチ / 総ポイント数: {selectedHistoryMatch.points.length} pts
+                  </p>
+                </div>
+                <div className="text-xl font-mono font-bold text-indigo-900">
+                  {selectedHistoryMatch.matchScore.sideA} - {selectedHistoryMatch.matchScore.sideB}
+                </div>
+              </div>
+
+              {selectedHistoryMatch.points.length === 0 ? (
+                <p className="text-center text-slate-400 py-8 text-sm">ポイントの記録がありません</p>
+              ) : (
+                <div className="overflow-x-auto text-sm">
+                  <table className="w-full text-left">
+                    <thead className="bg-slate-50 text-slate-500">
+                      <tr><th className="p-3">#</th><th className="p-3">スコア</th><th className="p-3">結果</th><th className="p-3">最後</th><th className="p-3 text-center">操作</th></tr>
+                    </thead>
+                    <tbody>
+                      {selectedHistoryMatch.points.slice().reverse().map((p, i) => (
+                        <tr key={p.id} className="border-t border-slate-100 hover:bg-slate-50">
+                          <td className="p-3 text-xs text-slate-400">{selectedHistoryMatch.points.length - i}</td>
+                          <td className="p-3 font-mono text-xs">{p.scoreState.gameScoreMe}-{p.scoreState.gameScoreOpp}</td>
+                          <td className="p-3 font-bold"><span className={p.isMeScored ? 'text-blue-600' : 'text-red-600'}>{RESULT_TYPES.find(r => r.id === p.result)?.label}</span></td>
+                          <td className="p-3 text-xs">{PLAYER_CONFIG[p.ender]?.label}</td>
+                          <td className="p-3 text-center">
+                            <button onClick={() => handleDeletePoint(selectedHistoryMatch.id, p.id)} className="text-red-400 p-1.5 hover:bg-red-50 hover:text-red-600 rounded transition-colors" title="このポイントを削除（再計算されます）">
+                              <Trash2 size={16}/>
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )
+        )}
       </main>
 
       <nav className="fixed bottom-0 w-full bg-white border-t p-2 flex justify-around shadow-[0_-4px_10px_rgba(0,0,0,0.05)] z-50 pb-safe">
         {[ { id: 'input', icon: PlusCircle, label: '入力' }, { id: 'analysis', icon: BarChart2, label: '分析' }, { id: 'history', icon: List, label: '履歴' } ].map(t => (
-          <button key={t.id} onClick={() => { setActiveTab(t.id); if(t.id === 'history') setHistoryView('list'); }} className={`flex flex-col items-center p-2 rounded-lg transition-colors flex-1 ${activeTab === t.id ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400'}`}>
+          <button key={t.id} onClick={() => { setActiveTab(t.id); if(t.id === 'history') setHistoryView('list'); }} className={`flex flex-col items-center p-2 rounded-lg transition-colors flex-1 ${activeTab === t.id ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-50'}`}>
             <t.icon size={20}/><span className="text-[10px] font-bold mt-1">{t.label}</span>
           </button>
         ))}
